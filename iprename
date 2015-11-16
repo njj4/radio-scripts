@@ -180,7 +180,12 @@ sub tagFile($$$)
   $idata->{"composer"} =
     setTag($mp3->{ID3v2},"TCOM","composer",$idata->{"composer"},undef);
 
+  my $subalb = undef;
   $idata->{"album"} =~ s/\s*:*\s*Series\s+(\d+).*//;
+  if ($idata->{"album"} =~ /\s*(.*?)\s*:\s*(.*?)\s*$/)
+  {
+    ($idata->{"album"},$subalb) = ($1,$2);
+  }
   $idata->{"album"} =
     setTag($mp3->{ID3v2},"TALB","album",$idata->{"album"},$sdata->{"album"});
   $mp3->{ID3v1}->album($idata->{"album"});
@@ -190,6 +195,11 @@ sub tagFile($$$)
   $idata->{"title"} =~ s/\//-/g;
   $idata->{"title"} =~ s/\s*:\s+/ - /g;
   $idata->{"title"} =~ s/^\s*\d+\.\s*//g;
+  if ($subalb)
+  {
+    $idata->{"title"} = $subalb . " " . $idata->{"title"};
+    $idata->{"title"} =~ s/Episode //;
+  }
   $idata->{"title"} =
     setTag($mp3->{ID3v2},"TIT2","title",$idata->{"title"},$sdata->{"title"});
   $mp3->{ID3v1}->title($idata->{"title"});
