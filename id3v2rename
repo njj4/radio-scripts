@@ -1,0 +1,68 @@
+#!/usr/bin/perl
+
+use MP3::Tag;
+
+foreach $file (@ARGV)
+{
+  my $mp3 = new MP3::Tag($file);
+  print "Processing $file ...\n";
+  $mp3->get_tags();
+  my $id3v2 = $mp3->{ID3v2};
+  next if (!defined $id3v2);
+  my $ser = ($id3v2->get_frame("TPOS"))[0];
+  my $ep = ($id3v2->get_frame("TRCK"))[0];
+  my $yr = ($id3v2->get_frame("TYER"))[0];
+  my $date = ($id3v2->get_frame("TDAT"))[0];
+  my $title = ($id3v2->get_frame("TIT2"))[0];
+  my ($mon,$day);
+  if (defined $date && $date =~ /(\d\d)(\d\d)/)
+  {
+    ($day,$mon) = ($1,$2);
+  }
+  
+  my @new = ( );
+
+  if (defined($ser) && defined($ep))
+  {
+    push(@new,sprintf("s%02d%s%02d",
+	$ser, ($ep < 100 ? "e" : $ep < 200 ? "s" : "t"), $ep % 100));
+  }
+  elsif (defined($ep))
+  {
+    push(@new,sprintf("%02d", $ep));
+  }
+
+  if (defined($yr))
+  {
+    if ($yr < 20)
+    {
+      $yr += 2000;
+    }
+    elsif ($yr < 100)
+    {
+      $yr += 1900;
+    }
+  }
+
+  if (defined($yr) && defined($mon) && defined($day))
+  {
+    push(@new, sprintf("%04d%02d%02d", $yr, $mon, $day));
+  }
+  elsif (defined($yr))
+  {
+    push(@new, sprintf("%04d", $yr));
+  }
+  
+  if (defined($title))
+  {
+    push(@new, $title);
+  }
+  $mp3->close();
+
+  next if (scalar(@new) == 0);
+  my $new = join(" ",@new) . ".mp3";
+
+  print "$file -> $new\n";
+  rename($file,$new) if (!-e $new);
+
+}

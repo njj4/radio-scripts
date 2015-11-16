@@ -1,0 +1,83 @@
+#!/usr/bin/perl
+
+use MP3::Tag;
+
+%types = ( "e" => "Episode", "s" => "Special", "t" => "Trailer" );
+
+foreach $file (@ARGV)
+{
+  my $mp3 = new MP3::Tag($file);
+  print "Processing $file ...\n";
+  $mp3->get_tags();
+  $mp3->new_tag("ID3v2") if (!defined $mp3->{ID3v2});
+  my ($ser,$type,$ep,$yr,$mon,$day);
+
+  if ($file =~ /s(\d+)([ets])(\d+)\s+(\d\d\d\d)(\d\d)(\d\d)\s*(.*?)\.mp3/i)
+  {
+    ($ser,$type,$ep,$yr,$mon,$day,$title) = ($1,$2,$3,$4,$5,$6,$7);
+  }
+  elsif ($file =~ /s(\d+)([ets])(\d+)[\s-_\~]+(\d\d\d\d)[\.-_\~]*(\d\d)[\.-_\~]*(\d\d)\s*(.*?)\.mp3/i)
+  {
+    ($ser,$type,$ep,$yr,$mon,$day,$title) = ($1,$2,$3,$4,$5,$6,$7);
+  }
+  elsif ($file =~ /(\d\d\d\d)[\.-_\~]*(\d\d)[\.-_\~]*(\d\d)[\s-_\~]+s(\d+)([ets])(\d+)[\s-_\~]+(.*?)\.mp3/i)
+  {
+    ($yr,$mon,$day,$ser,$type,$ep,$title) = ($1,$2,$3,$4,$5,$6,$7);
+  }
+  elsif ($file =~ /s(\d+)([ets])(\d+)\s*(.*?)\.mp3/i)
+  {
+    ($ser,$type,$ep,$title) = ($1,$2,$3,$4);
+  }
+  elsif ($file =~ /(\d\d\d\d)[-_\~\.]*(\d\d)[-_\~\.]*(\d\d)\s*(.*?)\.mp3/i)
+  {
+    ($yr,$mon,$day,$title) = ($1,$2,$3,$4);
+  }
+
+  $type = lc($type);
+
+  if ($yr)
+  {
+    $mp3->{ID3v2}->year($yr);
+    print "  TYER = $yr\n";
+  }
+  if ($day && $mon)
+  {
+    my $dat = sprintf("%02d%02d", $day, $mon);
+    $mp3->{ID3v2}->change_frame("TDAT", $dat) or
+      $mp3->{ID3v2}->add_frame("TDAT", $dat);
+    print "  TDAT = $dat\n";
+  }
+  if (defined $ser && defined $ep)
+  {
+    $ep += 100 if ($type eq "s");
+    $ep += 200 if ($type eq "t");
+    $mp3->{ID3v2}->change_frame("TRCK", sprintf("%d",$ep)) or
+      $mp3->{ID3v2}->add_frame("TRCK", sprintf("%d",$ep));
+    print "  TRCK = $ep\n";
+    $mp3->{ID3v2}->change_frame("TPOS", sprintf("%d",$ser)) or
+      $mp3->{ID3v2}->add_frame("TPOS", sprintf("%d",$ser));
+    print "  TPOS = $ser\n";
+  }
+  if ($title)
+  {
+    $title =~ s/^[\s-_\~]*//;
+    $title =~ s/[\s-_\~]*$//;
+    $title =~ s/\s*\[.*$//;
+    $title =~ s/_+/ /g;
+    $mp3->{ID3v2}->change_frame("TIT2", $title) or
+      $mp3->{ID3v2}->add_frame("TIT2", $title);
+    print "  TIT2 = $title\n";
+  }
+  elsif (defined $ep)
+  {
+    $type = "e" if (!$type);
+    $title = $types{$type} . " " . sprintf("%d",$ep % 100);
+    $mp3->{ID3v2}->change_frame("TIT2", $title) or
+    $mp3->{ID3v2}->add_frame("TIT2", $title);
+    print "  TIT2 = $title\n";
+  }
+  $mp3->{ID3v2}->write_tag();
+  ($yr,$mon,$day,$ser,$ep,$title,$type) =
+    (undef,undef,undef,undef,undef,undef,undef);
+  $mp3->close();
+}

@@ -1,0 +1,11 @@
+#!/usr/bin/perl
+
+foreach $file (@ARGV)
+{
+  print "Processing $file ...\n";
+  $new = $file . "_tmp";
+  system("vbrfix -always \"$file\" \"$new\" > /dev/null");
+  rename($new,$file);
+}
+unlink("vbrfix.log") if (-e "vbrfix.log");
+unlink("vbrfix.tmp") if (-e "vbrfix.tmp");

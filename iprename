@@ -1,0 +1,351 @@
+#!/usr/bin/perl
+
+$SIG{__WARN__} = sub { };
+
+use MP3::Tag;
+use Term::ReadLine;
+use Cwd;
+use File::Copy;
+use File::Glob ':glob';
+use File::Path;
+
+use strict;
+use vars qw(%genres %yearly $root);
+
+%genres = ( );
+%yearly = ( );
+$root = "/local/fs1/radio";
+
+sub loadGenres($)
+{
+  my ($genre) = @_;
+  my $cwd = getcwd;
+  chdir "$root/$genre";
+  foreach my $dir (glob("*"))
+  {
+    next if (! -d $dir);
+    $genres{$dir} = $genre;
+    chdir($dir);
+    if (glob("[12][0-9][0-9][0-9]") > 0)
+    {
+      $yearly{$dir} = 1;
+    }
+    chdir("..");
+  }
+  chdir $cwd;
+}
+
+sub getMetadataStat($)
+{
+  my ($file) = @_;
+  my $mdata = { };
+  my $mtime = (stat($file))[9] - (24*60*60);
+  ($mdata->{"day"}, $mdata->{"month"}, $mdata->{"year"}) =
+    (localtime($mtime))[3..5];
+  $mdata->{"year"} += 1900;
+  $mdata->{"month"} += 1;
+  $mdata->{"date"} = sprintf "%4d%02d%02d", $mdata->{"year"},
+    $mdata->{"month"}, $mdata->{"day"};
+  $file =~ s/_b\d+.*?.mp3$//;
+  $file =~ s/_/ /g;
+  my @bits;
+  ($mdata->{"album"}, $mdata->{"title"}, @bits) = split /\s+-\s+/, $file;
+  $mdata->{"bits"} = [ @bits ];
+  return $mdata;
+}
+
+sub getMetadataId3($)
+{
+  my ($file) = @_;
+  my $mp3 = new MP3::Tag($file);
+  $mp3->get_tags();
+  my $id3v2 = $mp3->{ID3v2};
+  return undef if (!defined $id3v2);
+  my $mdata = { };
+
+  $mdata->{"artist"} = ($id3v2->get_frame("TPE1"))[0];
+  $mdata->{"artist"} = "BBC" if ($mdata->{"artist"} =~ /BBC Radio/);
+  $mdata->{"album"} = ($id3v2->get_frame("TALB"))[0];
+  $mdata->{"series"} = ($id3v2->get_frame("TPOS"))[0];
+  $mdata->{"episode"} = ($id3v2->get_frame("TRCK"))[0];
+  $mdata->{"year"} = ($id3v2->get_frame("TYER"))[0];
+  my $date = ($id3v2->get_frame("TDAT"))[0];
+  $mdata->{"title"} = ($id3v2->get_frame("TIT2"))[0];
+  $mdata->{"composer"} = ($id3v2->get_frame("TCOM"))[0];
+  $mdata->{"composer"} = "" if ($mdata->{"composer"} =~ /BBC iPlayer/i);
+  $mdata->{"text"} = $id3v2->get_frame("USLT")->{"Text"}
+    if (defined $id3v2->get_frame("USLT"));
+
+  if (defined $date && $date =~ /(\d\d)(\d\d)/)
+  {
+    ($mdata->{"day"},$mdata->{"month"}) = ($1,$2);
+  }
+  $mdata->{"date"} =
+    sprintf "%4d%02d%02d", $mdata->{"year"}, $mdata->{"month"}, $mdata->{"day"};
+  $mp3->close();
+
+  return $mdata;
+}
+
+
+sub setTag($$$$$)
+{
+  my ($tag, $frame, $field, $idatum, $sdatum) = @_;
+  my $rl = new Term::ReadLine 'iPlayer tagging script';
+  $rl->ornaments('ue');
+  my $def = ($idatum ? $idatum : ($sdatum ? $sdatum : undef));
+  my $str = $rl->readline(sprintf("%-10s : ", ucfirst($field)), $def);
+  if ($str)
+  {
+    $tag->change_frame($frame, $str) or $tag->add_frame($frame, $str);
+  }
+  else
+  {
+    $tag->remove_frame($frame);
+  }
+  $tag->write_tag();
+  return $str;
+}
+
+sub setDate($$)
+{
+  my ($tag, $sdatum) = @_;
+  my ($day,$month,$year);
+  my $rl = new Term::ReadLine 'iPlayer tagging script';
+  $rl->ornaments('ue');
+  my $str = $rl->readline("Date       : ", $sdatum);
+  if ($str =~ /(\d\d\d\d)(\d\d)(\d\d)/)
+  {
+    ($year,$month,$day) = ($1,$2,$3);
+    my $tdat = sprintf("%02d%02d", $day, $month);
+    $tag->change_frame("TDAT",$tdat) or $tag->add_frame("TDAT",$tdat);
+    $tag->change_frame("TYER",$year) or $tag->add_frame("TYER",$year);
+    return ($str,$year);
+  }
+  else
+  {
+    $tag->remove_frame("TDAT");
+    $tag->remove_frame("TYER");
+    return (undef,undef);
+  }
+}
+
+sub rmTags($)
+{
+  my ($file) = @_;
+  my $mp3 = new MP3::Tag($file);
+
+  $mp3->get_tags();
+
+  $mp3->{ID3v2}->remove_frame("TCOP");
+  $mp3->{ID3v2}->remove_frame("POPM");
+  $mp3->{ID3v2}->remove_frame("TPE2");
+  $mp3->{ID3v2}->remove_frame("TIT1");
+  $mp3->{ID3v2}->remove_frame("TENC");
+  $mp3->{ID3v2}->remove_frame("TXXX");
+
+  my $fids = $mp3->{ID3v2}->get_frame_ids();
+
+  for my $fr (keys %{$fids})
+  {
+    if ($fr =~ /^COMM/)
+    {
+      my $comm = $mp3->{ID3v2}->get_frame($fr);
+      if ($comm->{"Description"} =~ /^iTun/)
+      {
+	print "Removing COMM[" . $comm->{"Description"} . "]\n";
+	$mp3->{ID3v2}->remove_frame($fr);
+      }
+    }
+  }
+  $mp3->{ID3v2}->write_tag();
+}
+
+sub tagFile($$$)
+{
+  my ($file,$idata,$sdata) = @_;
+  my $mp3 = new MP3::Tag($file);
+  $mp3->get_tags();
+  $mp3->new_tag("ID3v2") if (!defined $mp3->{ID3v2});
+  $mp3->new_tag("ID3v1") if (!defined $mp3->{ID3v1});
+
+  print $idata->{"text"} . "\n\n" if ($idata->{"text"});
+  printTechData($file);
+  print "File       : $file\n\n";
+
+  $idata->{"artist"} =
+    setTag($mp3->{ID3v2},"TPE1","artist",$idata->{"artist"},undef);
+  $mp3->{ID3v1}->artist($idata->{"artist"});
+
+  $idata->{"composer"} =
+    setTag($mp3->{ID3v2},"TCOM","composer",$idata->{"composer"},undef);
+
+  $idata->{"album"} =~ s/\s*:*\s*Series\s+(\d+).*//;
+  $idata->{"album"} =
+    setTag($mp3->{ID3v2},"TALB","album",$idata->{"album"},$sdata->{"album"});
+  $mp3->{ID3v1}->album($idata->{"album"});
+
+  $idata->{"title"} =~ s/: Episode//;
+  $idata->{"title"} =~ s/: (\d+)\./ $1 -/;
+  $idata->{"title"} =~ s/\//-/g;
+  $idata->{"title"} =~ s/\s*:\s+/ - /g;
+  $idata->{"title"} =~ s/^\s*\d+\.\s*//g;
+  $idata->{"title"} =
+    setTag($mp3->{ID3v2},"TIT2","title",$idata->{"title"},$sdata->{"title"});
+  $mp3->{ID3v1}->title($idata->{"title"});
+
+  $idata->{"series"} =
+    setTag($mp3->{ID3v2},"TPOS","series",$idata->{"series"},undef);
+
+  $idata->{"episode"} =
+    setTag($mp3->{ID3v2},"TRCK","episode",$idata->{"episode"},undef);
+  $mp3->{ID3v1}->track($idata->{"episode"});
+
+  if (!$idata->{"date"} || !$idata->{"year"})
+  {
+    ($idata->{"date"}, $idata->{"year"}) =
+      setDate($mp3->{ID3v2},$sdata->{"date"});
+  }
+  else
+  {
+    ($idata->{"date"}, $idata->{"year"}) =
+      setDate($mp3->{ID3v2},$idata->{"date"});
+  }
+  $mp3->{ID3v1}->year($idata->{"year"});
+
+  $idata->{"genre"} =
+    setTag($mp3->{ID3v2},"TCON","genre",$genres{$idata->{"album"}},undef);
+  $mp3->{ID3v1}->genre(101);
+
+  return $idata;
+}
+
+sub renameFile($$)
+{
+  my ($file,$mdata) = @_;
+  my $ndir = "$root/" . $mdata->{"genre"};
+  # $ndir .= "/" . $mdata->{"artist"} if ($mdata->{"artist"} ne "BBC");
+  $ndir .=  "/" . ($mdata->{"album"} ? $mdata->{"album"} :
+    "Miscellaneous/" . $mdata->{"year"});
+  my $jpg = $file;
+  $jpg =~ s/\.mp3$/\.jpg/;
+  my $txt = $file;
+  $txt =~ s/\.mp3$/\.txt/;
+  my $info = $file;
+  $info =~ s/\.mp3$/ - info.txt/;
+
+  if ($yearly{$mdata->{"album"}})
+  {
+    $ndir .= "/" . $mdata->{"year"};
+  }
+
+  my $nfile = "";
+  if ($mdata->{"episode"})
+  {
+    my $type = "x";
+    if ($mdata->{"series"})
+    {
+      if ($mdata->{"episode"} < 100)
+      {
+	$type = "e";
+      }
+      elsif ($mdata->{"episode"} < 200)
+      {
+	$type = "s";
+      }
+      elsif ($mdata->{"episode"} < 300)
+      {
+	$type = "t";
+      }
+      $nfile .= sprintf("s%02d%s%02d ",
+	$mdata->{"series"}, $type, $mdata->{"episode"} % 100);
+    }
+    else
+    {
+      $nfile .= sprintf("%02d ", $mdata->{"episode"});
+    }
+  }
+  if ($mdata->{"date"} =~ /^\d{8}$/)
+  {
+    $nfile .= $mdata->{"date"} . " ";
+  }
+  elsif ($mdata->{"year"} =~ /^\d{4}$/)
+  {
+    $nfile .= $mdata->{"year"} . " ";
+  }
+  if ($mdata->{"title"})
+  {
+    $nfile .= $mdata->{"title"}
+  }
+  $nfile .= ".mp3";
+
+  my $rl = new Term::ReadLine 'iPlayer tagging script';
+  $rl->ornaments('ue');
+  $ndir = $rl->readline("Directory  : ", $ndir);
+  $nfile = $rl->readline("Filename   : ", $nfile);
+  my $njpg = $nfile;
+  $njpg =~ s/\.mp3$/\.jpg/;
+  my $ntxt = $nfile;
+  $ntxt =~ s/\.mp3$/\.txt/;
+
+  mkpath($ndir);
+  if (-e "$ndir/$nfile")
+  {
+    print "File already exists - not saving.\n";
+  }
+  else
+  {
+    move($file, "$ndir/$nfile");
+    move($jpg,"$ndir/$njpg") if (-e $jpg);
+    move($txt,"$ndir/$ntxt") if (-e $txt);
+    move($info,"$ndir/$ntxt") if (-e $info && !-e "$ndir/$ntxt");
+  }
+}
+
+sub printTechData($)
+{
+  my ($file) = @_;
+  system("mp3info -x -p \""
+    . "Size       : %kkB\n"
+    . "Time       : %02m:%02s\n"
+    . "Media type : MPEG %0.1v Layer %L\n"
+    . "Audio      : %r kbps %qkhz (%o)\n"
+    . "Frames     : %u good %b corrupt\n"
+    . "Original   : %O\n"
+    . "Copyright  : %C\n"
+    . "Emphasis   : %e\n"
+    . "CRC        : %E\n\n\" "
+    . "\"$file\"");
+}
+
+sub fixLen($)
+{
+  my ($file) = @_;
+  my $new = $file . "_tmp-$$";
+  system("vbrfix -always \"$file\" \"$new\" > /dev/null");
+  rename($new,$file);
+  unlink("vbrfix.log") if (-e "vbrfix.log");
+  unlink("vbrfix.tmp") if (-e "vbrfix.tmp");
+}
+
+loadGenres("Comedy");
+loadGenres("Documentaries");
+loadGenres("Drama");
+loadGenres("Horror");
+loadGenres("Music");
+loadGenres("Mystery");
+loadGenres("SF");
+
+foreach my $file (@ARGV)
+{
+  print "$file\n\n";
+
+  my $idata = getMetadataId3($file);
+  my $sdata = getMetadataStat($file);
+  $idata = tagFile($file,$idata,$sdata);
+  rmTags($file);
+  fixLen($file);
+  renameFile($file,$idata);
+
+  print "\n";
+}
