@@ -200,6 +200,7 @@ sub tagFile($$$)
     $idata->{"title"} = $subalb . " - " . $idata->{"title"}
       if ($idata->{"title"} !~ /$subalb/);
     $idata->{"title"} =~ s/:*\s*Episode//;
+    $idata->{"title"} =~ s/- (\d+)\s*$/$1/;
   }
   $idata->{"title"} =
     setTag($mp3->{ID3v2},"TIT2","title",$idata->{"title"},$sdata->{"title"});
