@@ -197,7 +197,8 @@ sub tagFile($$$)
   $idata->{"title"} =~ s/^\s*\d+\.\s*//g;
   if ($subalb)
   {
-    $idata->{"title"} = $subalb . " " . $idata->{"title"};
+    $idata->{"title"} = $subalb . " - " . $idata->{"title"}
+      if ($idata->{"title"} !~ /$subalb/);
     $idata->{"title"} =~ s/:*\s*Episode//;
   }
   $idata->{"title"} =
