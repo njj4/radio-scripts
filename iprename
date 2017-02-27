@@ -8,6 +8,9 @@ use Cwd;
 use File::Copy;
 use File::Glob ':glob';
 use File::Path;
+use XML::Simple;
+use Data::Dumper;
+
 
 use strict;
 use vars qw(%genres %yearly $root);
@@ -54,6 +57,68 @@ sub getMetadataStat($)
   return $mdata;
 }
 
+sub getMetadataXML($)
+{
+  my ($file) = @_;
+  my $xfile = $file;
+  $xfile =~ s/\.mp3$/\.xml/;
+
+  my $xdata = {
+    "artist" => "",
+    "album" => "",
+    "series" => "",
+    "episode" => "",
+    "year" => "",
+    "month" => "",
+    "day" => "",
+    "date" => "",
+    "title" => "",
+    "text" => ""
+  };
+  return $xfile if (!-e $xfile);
+
+  my %gmap = {
+    "Drama" => "Drama",
+    "Readings" => "Drama",
+    "Music" => "Music",
+    "Comedy" => "Comedy",
+    "Factual" => "Documentaries",
+    "Discussion & Talk" => "Documentaries",
+    "Games & Quizzes" => "Comedy",
+    "Magazines & Reviews" => "Documentaries"
+  };
+
+  my $xs = new XML::Simple;
+  my $xml = $xs->XMLin($xfile, suppressempty => '');
+
+  $xdata->{"artist"} = $xml->{"channel"};
+  $xdata->{"artist"} = "BBC" if ($xdata->{"artist"} =~ /BBC Radio/);
+  $xdata->{"album"} = $xml->{"name"};
+  $xdata->{"series"} = $xml->{"seriesnum"};
+  $xdata->{"episode"} = $xml->{"episodenum"};
+  my $bdate = $xml->{"firstbcastdate"};
+  if ($bdate =~ /(\d+)-(\d+)-(\d+)/)
+  {
+    my ($y,$m,$d) = ($1,$2,$3);
+    $xdata->{"year"} = $y;
+    $xdata->{"month"} = $m;
+    $xdata->{"day"} = $d;
+    $xdata->{"date"} = "$y$m$d";
+  }
+  $xdata->{"title"} = $xml->{"episodeshort"};
+  $xdata->{"text"} = ampersand($xml->{"desclong"});
+  $xdata->{"genre"} = $gmap{ampersand($xml->{"category"})};
+  return $xdata;
+}
+
+sub ampersand($)
+{
+  my ($txt) = @_;
+  $txt =~ s/\&amp;/\&/g;
+  $txt =~ s/\&(\d+);/chr($1)/e;
+  return $txt;
+}
+
 sub getMetadataId3($)
 {
   my ($file) = @_;
@@ -73,8 +138,14 @@ sub getMetadataId3($)
   $mdata->{"title"} = ($id3v2->get_frame("TIT2"))[0];
   $mdata->{"composer"} = ($id3v2->get_frame("TCOM"))[0];
   $mdata->{"composer"} = "" if ($mdata->{"composer"} =~ /BBC iPlayer/i);
-  $mdata->{"text"} = $id3v2->get_frame("USLT")->{"Text"}
-    if (defined $id3v2->get_frame("USLT"));
+  if (defined $id3v2->get_frame("USLT"))
+  {
+    $mdata->{"text"} = $id3v2->get_frame("USLT")->{"Text"};
+  }
+  elsif (defined $id3v2->get_frame("TXXX"))
+  {
+    $mdata->{"text"} = getFrameText($id3v2,"TXXX","USLT");
+  }
 
   if (defined $date && $date =~ /(\d\d)(\d\d)/)
   {
@@ -87,13 +158,25 @@ sub getMetadataId3($)
   return $mdata;
 }
 
-
-sub setTag($$$$$)
+sub getFrameText($$$)
 {
-  my ($tag, $frame, $field, $idatum, $sdatum) = @_;
+  my ($id3v2,$name,$desc) = @_;
+  my ($frame,$info,@rest) = $id3v2->get_frame($name);
+  for my $frame (@rest)
+  {
+    return $frame->{"Text"} if ($frame->{"Description"} eq $desc);
+  }
+  return undef;
+}
+
+sub setTag($$$$$$)
+{
+  my ($tag, $frame, $field, $idatum, $xdatum, $sdatum) = @_;
   my $rl = new Term::ReadLine 'iPlayer tagging script';
   $rl->ornaments('ue');
-  my $def = ($idatum ? $idatum : ($sdatum ? $sdatum : undef));
+  my $def = ($idatum ? $idatum :
+    ($xdatum ? $xdatum :
+      ($sdatum ? $sdatum : undef)));
   my $str = $rl->readline(sprintf("%-10s : ", ucfirst($field)), $def);
   if ($str)
   {
@@ -161,9 +244,9 @@ sub rmTags($)
   $mp3->{ID3v2}->write_tag();
 }
 
-sub tagFile($$$)
+sub tagFile($$$$)
 {
-  my ($file,$idata,$sdata) = @_;
+  my ($file,$idata,$xdata,$sdata) = @_;
   my $mp3 = new MP3::Tag($file);
   $mp3->get_tags();
   $mp3->new_tag("ID3v2") if (!defined $mp3->{ID3v2});
@@ -174,12 +257,16 @@ sub tagFile($$$)
   print "File       : $file\n\n";
 
   $idata->{"artist"} =
-    setTag($mp3->{ID3v2},"TPE1","artist",$idata->{"artist"},undef);
+    setTag($mp3->{ID3v2},"TPE1","artist",
+      $idata->{"artist"},$xdata->{"artist"},undef);
   $mp3->{ID3v1}->artist($idata->{"artist"});
 
   $idata->{"composer"} =
-    setTag($mp3->{ID3v2},"TCOM","composer",$idata->{"composer"},undef);
+    setTag($mp3->{ID3v2},"TCOM","composer",
+      $idata->{"composer"},$xdata->{"composer"},undef);
 
+  # printf "[album: %s]\n", $idata->{"album"};
+  # printf "[title: %s]\n", $idata->{"title"};
   my $subalb = undef;
   $idata->{"album"} =~ s/\s*:*\s*Series\s+(\d+).*//;
   if ($idata->{"album"} =~ /\s*(.*?)\s*:\s*(.*?)\s*$/)
@@ -187,7 +274,8 @@ sub tagFile($$$)
     ($idata->{"album"},$subalb) = ($1,$2);
   }
   $idata->{"album"} =
-    setTag($mp3->{ID3v2},"TALB","album",$idata->{"album"},$sdata->{"album"});
+    setTag($mp3->{ID3v2},"TALB","album",
+      $idata->{"album"},$xdata->{"album"},$sdata->{"album"});
   $mp3->{ID3v1}->album($idata->{"album"});
 
   $idata->{"title"} =~ s/: Episode//;
@@ -203,30 +291,40 @@ sub tagFile($$$)
     $idata->{"title"} =~ s/- (\d+)\s*$/$1/;
   }
   $idata->{"title"} =
-    setTag($mp3->{ID3v2},"TIT2","title",$idata->{"title"},$sdata->{"title"});
+    setTag($mp3->{ID3v2},"TIT2","title",
+      $idata->{"title"},$xdata->{"title"},$sdata->{"title"});
   $mp3->{ID3v1}->title($idata->{"title"});
 
   $idata->{"series"} =
-    setTag($mp3->{ID3v2},"TPOS","series",$idata->{"series"},undef);
+    setTag($mp3->{ID3v2},"TPOS","series",
+      $idata->{"series"},$xdata->{"series"},undef);
 
   $idata->{"episode"} =
-    setTag($mp3->{ID3v2},"TRCK","episode",$idata->{"episode"},undef);
+    setTag($mp3->{ID3v2},"TRCK","episode",
+      $idata->{"episode"},$xdata->{"episode"},undef);
   $mp3->{ID3v1}->track($idata->{"episode"});
 
-  if (!$idata->{"date"} || !$idata->{"year"})
+  if ($xdata->{"date"})
   {
     ($idata->{"date"}, $idata->{"year"}) =
-      setDate($mp3->{ID3v2},$sdata->{"date"});
+    setDate($mp3->{ID3v2},$xdata->{"date"});
+  }
+  elsif ($idata->{"date"})
+  {
+    ($idata->{"date"}, $idata->{"year"}) =
+    setDate($mp3->{ID3v2},$idata->{"date"});
   }
   else
   {
     ($idata->{"date"}, $idata->{"year"}) =
-      setDate($mp3->{ID3v2},$idata->{"date"});
+    setDate($mp3->{ID3v2},$sdata->{"date"});
   }
+
   $mp3->{ID3v1}->year($idata->{"year"});
 
   $idata->{"genre"} =
-    setTag($mp3->{ID3v2},"TCON","genre",$genres{$idata->{"album"}},undef);
+    setTag($mp3->{ID3v2},"TCON","genre",
+      $genres{$idata->{"album"}},$xdata->{"genre"},undef);
   $mp3->{ID3v1}->genre(101);
 
   return $idata;
@@ -245,6 +343,8 @@ sub renameFile($$)
   $txt =~ s/\.mp3$/\.txt/;
   my $info = $file;
   $info =~ s/\.mp3$/ - info.txt/;
+  my $xml = $file;
+  $xml =~ s/\.mp3$/\.xml/;
 
   if ($yearly{$mdata->{"album"}})
   {
@@ -299,6 +399,8 @@ sub renameFile($$)
   $njpg =~ s/\.mp3$/\.jpg/;
   my $ntxt = $nfile;
   $ntxt =~ s/\.mp3$/\.txt/;
+  my $nxml = $nfile;
+  $nxml =~ s/\.mp3$/\.xml/;
 
   mkpath($ndir);
   if (-e "$ndir/$nfile")
@@ -311,6 +413,7 @@ sub renameFile($$)
     move($jpg,"$ndir/$njpg") if (-e $jpg);
     move($txt,"$ndir/$ntxt") if (-e $txt);
     move($info,"$ndir/$ntxt") if (-e $info && !-e "$ndir/$ntxt");
+    move($xml,"$ndir/$nxml") if (-e $xml);
   }
 }
 
@@ -354,7 +457,8 @@ foreach my $file (@ARGV)
 
   my $idata = getMetadataId3($file);
   my $sdata = getMetadataStat($file);
-  $idata = tagFile($file,$idata,$sdata);
+  my $xdata = getMetadataXML($file);
+  $idata = tagFile($file,$idata,$xdata,$sdata);
   rmTags($file);
   fixLen($file);
   renameFile($file,$idata);
